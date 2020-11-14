@@ -1,10 +1,10 @@
 # pv-migrate
 
-This is a cli tool/kubectl plugin to easily migrate 
+This is a cli tool/kubectl plugin to easily migrate
 the contents of one Kubernetes `PersistentVolume` to another.
 
 Common use case: You have a database with a bound 50gb PersistentVolumeClaim.
-Unfortunately 50gb was not enough and you filled all the disk space rather quickly. 
+Unfortunately 50gb was not enough and you filled all the disk space rather quickly.
 And sadly your StorageClass/provisioner doesn't support [volume expansion](https://kubernetes.io/blog/2018/07/12/resizing-persistent-volumes-using-kubernetes/).
 Now you need to create a new PVC of 1tb and somehow copy all the data to the new volume, as-is, with its permissions and so on.
 
@@ -21,7 +21,7 @@ $ kubectl pv-migrate \
   --dest-namespace ns-b \
   --dest big-pvc
 ```
-This will create a temporary **sshd** pod that has the `small-pvc` mounted, 
+This will create a temporary **sshd** pod that has the `small-pvc` mounted,
 and an **rsync** job with `big-pvc` mounted, and will rsync the whole content from the source to the target.
 It will clean up the temporary resources it created after the operation is completed (or failed).
 
@@ -42,15 +42,15 @@ INFO[0018] Finished cleanup                              instance=amcsl
 ```
 
 
-**Note:** For it to run as kubectl plugin via `kubectl pv-migrate`, 
-put the binary with name `kubectl-pv_migrate` under your `PATH`.  
+**Note:** For it to run as kubectl plugin via `kubectl pv-migrate`,
+put the binary with name `kubectl-pv_migrate` under your `PATH`.
 To use it standalone, simply run it like `./pv-migrate --source-namespace ....`
 
 ## Building
 
 To build for your platform
 ```bash
-$ dep ensure
+$ go mod download
 $ go build
 ```
 
@@ -61,7 +61,7 @@ $ ./build.sh
 
 ## Notes
 
-* This version has a **hardcoded RSA public/private 
-key pair** in the sshd/rsync docker images and in the codebase. 
+* This version has a **hardcoded RSA public/private
+key pair** in the sshd/rsync docker images and in the codebase.
 This is intentional, since security is not a concern at this release.
 In the future, a key pair will probably be generated on the client and be used instead.
