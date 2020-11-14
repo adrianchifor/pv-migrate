@@ -2,11 +2,18 @@ package main
 
 import (
 	"flag"
+	"fmt"
+	"math/rand"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
+	"time"
+
 	"github.com/golang/glog"
 	log "github.com/sirupsen/logrus"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/informers"
@@ -14,12 +21,6 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
-	"math/rand"
-	"os"
-	"os/signal"
-	"path/filepath"
-	"syscall"
-	"time"
 )
 
 func init() {
@@ -84,6 +85,7 @@ func main() {
 	sourceNamespace := flag.String("source-namespace", "", "Source namespace")
 	dest := flag.String("dest", "", "Destination persistent volume claim")
 	destNamespace := flag.String("dest-namespace", "", "Destination namespace")
+	dockerRegistry := flag.String("dockerRegistry", "docker.io", "Docker Registry to pull pv-migrate images from")
 	flag.Parse()
 
 	if *source == "" || *sourceNamespace == "" || *dest == "" || *destNamespace == "" {
@@ -112,7 +114,7 @@ func main() {
 	defer doCleanup(kubeClient, instance, *sourceNamespace)
 	defer doCleanup(kubeClient, instance, *destNamespace)
 
-	migrateViaRsync(instance, kubeClient, sourceClaimInfo, destClaimInfo)
+	migrateViaRsync(instance, kubeClient, sourceClaimInfo, destClaimInfo, *dockerRegistry)
 }
 
 func handleSigterm(kubeClient *kubernetes.Clientset, instance string, sourceNamespace string, destNamespace string) {
@@ -126,7 +128,7 @@ func handleSigterm(kubeClient *kubernetes.Clientset, instance string, sourceName
 	}()
 }
 
-func prepareRsyncJob(instance string, destClaimInfo claimInfo, targetHost string) batchv1.Job {
+func prepareRsyncJob(instance string, destClaimInfo claimInfo, targetHost string, dockerRegistry string) batchv1.Job {
 	jobTtlSeconds := int32(600)
 	backoffLimit := int32(0)
 	jobName := "pv-migrate-rsync-" + instance
@@ -163,9 +165,8 @@ func prepareRsyncJob(instance string, destClaimInfo claimInfo, targetHost string
 					},
 					Containers: []corev1.Container{
 						{
-							Name:            "app",
-							Image:           "docker.io/utkuozdemir/pv-migrate-rsync:v0.1.0",
-							ImagePullPolicy: corev1.PullAlways,
+							Name:  "app",
+							Image: fmt.Sprintf("%s/utkuozdemir/pv-migrate-rsync:v0.1.0", dockerRegistry),
 							Command: []string{
 								"rsync",
 								"-avz",
@@ -192,16 +193,16 @@ func prepareRsyncJob(instance string, destClaimInfo claimInfo, targetHost string
 	return job
 }
 
-func migrateViaRsync(instance string, kubeClient *kubernetes.Clientset, sourceClaimInfo claimInfo, destClaimInfo claimInfo) {
-	sftpPod := prepareSshdPod(instance, sourceClaimInfo)
+func migrateViaRsync(instance string, kubeClient *kubernetes.Clientset, sourceClaimInfo claimInfo, destClaimInfo claimInfo, dockerRegistry string) {
+	sftpPod := prepareSshdPod(instance, sourceClaimInfo, dockerRegistry)
 	createSshdPodWaitTillRunning(kubeClient, sftpPod)
 	createdService := createSshdService(instance, kubeClient, sourceClaimInfo)
 	targetHostName := createdService.Name + "." + createdService.Namespace + ".svc"
-	rsyncJob := prepareRsyncJob(instance, destClaimInfo, targetHostName)
+	rsyncJob := prepareRsyncJob(instance, destClaimInfo, targetHostName, dockerRegistry)
 	createJobWaitTillCompleted(kubeClient, rsyncJob)
 }
 
-func prepareSshdPod(instance string, sourceClaimInfo claimInfo) corev1.Pod {
+func prepareSshdPod(instance string, sourceClaimInfo claimInfo, dockerRegistry string) corev1.Pod {
 	podName := "pv-migrate-sshd-" + instance
 	return corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -227,9 +228,8 @@ func prepareSshdPod(instance string, sourceClaimInfo claimInfo) corev1.Pod {
 			},
 			Containers: []corev1.Container{
 				{
-					Name:            "app",
-					Image:           "docker.io/utkuozdemir/pv-migrate-sshd:v0.1.0",
-					ImagePullPolicy: corev1.PullAlways,
+					Name:  "app",
+					Image: fmt.Sprintf("%s/utkuozdemir/pv-migrate-sshd:v0.1.0", dockerRegistry),
 					VolumeMounts: []corev1.VolumeMount{
 						{
 							Name:      "source-vol",
@@ -250,7 +250,7 @@ func prepareSshdPod(instance string, sourceClaimInfo claimInfo) corev1.Pod {
 }
 
 func buildClaimInfo(kubeClient *kubernetes.Clientset, sourceNamespace *string, source *string) claimInfo {
-	claim, err := kubeClient.CoreV1().PersistentVolumeClaims(*sourceNamespace).Get(*source, v1.GetOptions{})
+	claim, err := kubeClient.CoreV1().PersistentVolumeClaims(*sourceNamespace).Get(*source, metav1.GetOptions{})
 	if err != nil {
 		log.Panic("Failed to get source claim")
 	}
